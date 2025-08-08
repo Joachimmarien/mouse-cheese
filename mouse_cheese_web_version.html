@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mouse & Cheese (Web)</title>
+  <style>
+    :root {
+      --bg: #1e1e28;
+      --fg: #f0f0f0;
+      --accent: #ffd700; /* cheese */
+      --mouse: #c8c8ff;  /* mouse */
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    .wrap {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: 100%;
+    }
+    header, footer {
+      padding: .75rem 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      background: #15151d;
+      border-bottom: 1px solid #2a2a37;
+    }
+    footer { border-top: 1px solid #2a2a37; border-bottom: none; }
+    .title {
+      font-weight: 700; letter-spacing: .3px;
+    }
+    .hud {
+      display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .btn {
+      background: #2a2a37; color: var(--fg);
+      border: 1px solid #3a3a4a; border-radius: 10px;
+      padding: .5rem .8rem; cursor: pointer;
+      transition: transform .06s ease; user-select: none;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+
+    .game-area { position: relative; display: grid; place-items: center; }
+    canvas { width: min(92vw, 900px); height: min(60vh, 600px); border-radius: 12px; background: #1a1a24; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+
+    .overlay {
+      position: absolute; inset: 0; display: none; place-items: center;
+      background: rgba(0,0,0,.45);
+      text-align: center; padding: 2rem;
+    }
+    .overlay.visible { display: grid; }
+    .card {
+      background: #0f0f16; border: 1px solid #2a2a37; border-radius: 16px;
+      padding: 1.25rem 1.5rem; max-width: 520px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.5);
+    }
+    .card h1 { margin: 0 0 .25rem; font-size: 2rem; }
+    .card p { margin: .25rem 0 .75rem; opacity: .9; }
+    .kbd { padding: .1rem .35rem; border: 1px solid #3a3a4a; border-bottom-width: 2px; border-radius: 6px; background: #1b1b26; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="title">🐭 Mouse & Cheese</div>
+      <div class="hud">
+        <div>Score: <span id="score">0</span></div>
+        <div>Time: <span id="time">60</span>s</div>
+        <button class="btn" id="pauseBtn" title="P">Pause</button>
+        <button class="btn" id="restartBtn" title="R">Restart</button>
+      </div>
+    </header>
+
+    <main class="game-area">
+      <canvas id="game" width="900" height="600" aria-label="Game canvas"></canvas>
+
+      <div class="overlay" id="overlay">
+        <div class="card">
+          <h1 id="overlayTitle">Paused</h1>
+          <p id="overlaySub">Press <span class="kbd">P</span> to resume.</p>
+          <div style="display:flex; gap:.5rem; justify-content:center; margin-top:.75rem;">
+            <button class="btn" id="overlayResume">Resume</button>
+            <button class="btn" id="overlayRestart">Restart</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <div>Controls: <span class="kbd">←</span><span class="kbd">→</span><span class="kbd">↑</span><span class="kbd">↓</span> or <span class="kbd">W</span><span class="kbd">A</span><span class="kbd">S</span><span class="kbd">D</span>; <span class="kbd">P</span> pause; <span class="kbd">R</span> restart.</div>
+      <div style="opacity:.8">No installs needed — runs in your browser.</div>
+    </footer>
+  </div>
+
+  <script>
+    // --- Game config ---
+    const WIDTH = 900;
+    const HEIGHT = 600;
+    const MOUSE_SPEED = 5;
+    const MOUSE_DIAM = 24;
+    const CHEESE_DIAM = 18;
+    const GAME_TIME = 60; // seconds
+
+    // Colors
+    const BG = '#1a1a24';
+    const MOUSE = getComputedStyle(document.documentElement).getPropertyValue('--mouse').trim() || '#c8c8ff';
+    const CHEESE = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#ffd700';
+
+    // --- Canvas & UI ---
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const timeEl = document.getElementById('time');
+    const overlay = document.getElementById('overlay');
+    const overlayTitle = document.getElementById('overlayTitle');
+    const overlaySub = document.getElementById('overlaySub');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const overlayResume = document.getElementById('overlayResume');
+    const overlayRestart = document.getElementById('overlayRestart');
+
+    // --- Game state ---
+    let mouse = { x: WIDTH/2, y: HEIGHT/2 };
+    let cheese = randPos();
+    let score = 0;
+    let keys = new Set();
+
+    let startMs = null;       // timestamp when game starts/resumes
+    let elapsedMs = 0;        // accumulated elapsed when paused
+    let paused = false;
+    let gameOver = false;
+
+    // Utility
+    function randPos() {
+      const margin = 30;
+      return {
+        x: Math.floor(Math.random() * (WIDTH - margin*2)) + margin,
+        y: Math.floor(Math.random() * (HEIGHT - margin*2)) + margin,
+      };
+    }
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+    // Input
+    window.addEventListener('keydown', (e) => {
+      if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)) e.preventDefault();
+      keys.add(e.key.toLowerCase());
+      if (e.key.toLowerCase() === 'p') togglePause();
+      if (e.key.toLowerCase() === 'r') restart();
+    });
+    window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+
+    pauseBtn.addEventListener('click', togglePause);
+    restartBtn.addEventListener('click', restart);
+    overlayResume.addEventListener('click', togglePause);
+    overlayRestart.addEventListener('click', restart);
+
+    // Touch controls (simple virtual joystick behavior)
+    let touchId = null, lastTouch = null;
+    canvas.addEventListener('touchstart', (e) => { if (!touchId && e.changedTouches.length) touchId = e.changedTouches[0].identifier; lastTouch = e.changedTouches[0]; });
+    canvas.addEventListener('touchmove', (e) => { const t = [...e.changedTouches].find(t=>t.identifier===touchId); if (t) lastTouch = t; });
+    canvas.addEventListener('touchend', (e) => { const t = [...e.changedTouches].find(t=>t.identifier===touchId); if (t) { touchId = null; lastTouch = null; } });
+
+    function currentTimeMs() { return performance.now(); }
+
+    function remainingSeconds() {
+      const t = elapsedMs + (paused || gameOver ? 0 : (currentTimeMs() - (startMs ?? currentTimeMs())));
+      return Math.max(0, GAME_TIME - Math.floor(t / 1000));
+    }
+
+    function togglePause() {
+      if (gameOver) return; // no pause at game over screen
+      paused = !paused;
+      if (paused) {
+        // accumulate elapsed and show overlay
+        elapsedMs += currentTimeMs() - (startMs ?? currentTimeMs());
+        startMs = null;
+        overlay.classList.add('visible');
+        overlayTitle.textContent = 'Paused';
+        overlaySub.innerHTML = 'Press <span class="kbd">P</span> to resume.';
+      } else {
+        startMs = currentTimeMs();
+        overlay.classList.remove('visible');
+      }
+    }
+
+    function restart() {
+      mouse = { x: WIDTH/2, y: HEIGHT/2 };
+      cheese = randPos();
+      score = 0; scoreEl.textContent = score;
+      paused = false; gameOver = false;
+      elapsedMs = 0; startMs = currentTimeMs();
+      overlay.classList.remove('visible');
+      requestAnimationFrame(loop);
+    }
+
+    function endGame() {
+      gameOver = true;
+      overlay.classList.add('visible');
+      overlayTitle.textContent = "Time's up!";
+      overlaySub.textContent = `Final score: ${score}`;
+    }
+
+    function drawCircle(x, y, r, color) {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    function update(dt) {
+      // Keyboard movement
+      let dx = 0, dy = 0;
+      if (keys.has('arrowleft') || keys.has('a')) dx -= MOUSE_SPEED;
+      if (keys.has('arrowright') || keys.has('d')) dx += MOUSE_SPEED;
+      if (keys.has('arrowup') || keys.has('w')) dy -= MOUSE_SPEED;
+      if (keys.has('arrowdown') || keys.has('s')) dy += MOUSE_SPEED;
+
+      // Touch movement (very simple: drag direction moves mouse)
+      if (lastTouch) {
+        // Map touch to canvas coordinates
+        const rect = canvas.getBoundingClientRect();
+        const tx = (lastTouch.clientX - rect.left) * (canvas.width / rect.width);
+        const ty = (lastTouch.clientY - rect.top) * (canvas.height / rect.height);
+        const ang = Math.atan2(ty - mouse.y, tx - mouse.x);
+        dx += Math.cos(ang) * MOUSE_SPEED;
+        dy += Math.sin(ang) * MOUSE_SPEED;
+      }
+
+      mouse.x = clamp(mouse.x + dx, MOUSE_DIAM/2, WIDTH - MOUSE_DIAM/2);
+      mouse.y = clamp(mouse.y + dy, MOUSE_DIAM/2, HEIGHT - MOUSE_DIAM/2);
+
+      // Collision detection (distance-based circles)
+      const rSum = (MOUSE_DIAM + CHEESE_DIAM) / 2;
+      const dist2 = (mouse.x - cheese.x)**2 + (mouse.y - cheese.y)**2;
+      if (dist2 <= rSum * rSum) {
+        score += 1; scoreEl.textContent = score;
+        cheese = randPos();
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      ctx.fillStyle = BG; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      // Draw cheese
+      drawCircle(cheese.x, cheese.y, CHEESE_DIAM/2, CHEESE);
+
+      // Draw mouse body + ears
+      drawCircle(mouse.x, mouse.y, MOUSE_DIAM/2, MOUSE);
+      const earOffset = MOUSE_DIAM / 3;
+      const earSize = Math.max(8, MOUSE_DIAM / 3) / 2;
+      drawCircle(mouse.x - earOffset, mouse.y - earOffset, earSize, MOUSE);
+      drawCircle(mouse.x + earOffset, mouse.y - earOffset, earSize, MOUSE);
+
+      // HUD
+      timeEl.textContent = remainingSeconds();
+    }
+
+    let last = null;
+    function loop(ts) {
+      if (gameOver || paused) return; // rendering is paused when overlay is up
+      if (!startMs) startMs = currentTimeMs();
+      if (!last) last = ts;
+      const dt = Math.min(32, ts - last); // clamp dt to avoid big jumps
+      last = ts;
+
+      if (remainingSeconds() <= 0) { endGame(); render(); return; }
+
+      update(dt);
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    // Start the game
+    restart();
+
+    // Make the canvas crisp on high-DPI screens
+    function resizeForDPI() {
+      const ratio = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+      canvas.width = WIDTH * ratio;
+      canvas.height = HEIGHT * ratio;
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+    resizeForDPI();
+    window.addEventListener('resize', resizeForDPI);
+  </script>
+</body>
+</html>
